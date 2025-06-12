@@ -1,0 +1,125 @@
+---
+# Main playbook: multi_account_disk_monitoring.yml
+# Purpose: Collect disk utilization metrics from EC2 instances across multiple AWS accounts
+
+- name: Setup prerequisites for multi-account monitoring
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - vars/aws_accounts.yml
+  tasks:
+    - name: Create result directory
+      file:
+        path: "{{ result_dir }}"
+        state: directory
+        mode: '0755'
+      
+    - name: Clean previous results
+      file:
+        path: "{{ result_dir }}/*.json"
+        state: absent
+      
+    - name: Ensure AWS credentials are configured
+      shell: aws sts get-caller-identity --profile monitoring
+      register: aws_identity
+      failed_when: aws_identity.rc != 0
+      changed_when: false
+      
+    - name: Display execution information
+      debug:
+        msg: 
+          - "Starting disk utilization monitoring across {{ aws_accounts | length }} accounts"
+          - "Execution timestamp: {{ ansible_date_time.iso8601 }}"
+          - "Target accounts: {{ aws_accounts | map(attribute='name') | join(', ') }}"
+
+- name: Collect disk utilization across all AWS accounts
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - vars/aws_accounts.yml
+  tasks:
+    - name: Process each AWS account
+      include_tasks: tasks/process_account.yml
+      loop: "{{ aws_accounts }}"
+      loop_control:
+        loop_var: account
+        label: "{{ account.name }} ({{ account.id }})"
+
+- name: Aggregate and upload results
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - vars/aws_accounts.yml
+  tasks:
+    - name: Count collected results
+      find:
+        paths: "{{ result_dir }}"
+        patterns: "*.json"
+      register: result_files
+    
+    - name: Display collection statistics
+      debug:
+        msg: "Collected {{ result_files.files | length }} instance disk utilization reports"
+    
+    - name: Create timestamp directory variable
+      set_fact:
+        timestamp_dir: "disk-metrics/{{ ansible_date_time.year }}-{{ ansible_date_time.month }}-{{ ansible_date_time.day }}"
+    
+    - name: Combine all results
+      shell: "jq -s '.' {{ result_dir }}/*.json > {{ result_dir }}/combined_results.json"
+      args:
+        executable: /bin/bash
+      when: result_files.files | length > 0
+      
+    - name: Upload results to S3
+      amazon.aws.s3_object:
+        bucket: "{{ s3_bucket_name }}"
+        object: "{{ timestamp_dir }}/combined_results.json"
+        src: "{{ result_dir }}/combined_results.json"
+        mode: put
+      environment:
+        AWS_PROFILE: monitoring
+      when: result_files.files | length > 0
+      
+    - name: Generate summary report
+      template:
+        src: templates/report_template.j2
+        dest: "{{ result_dir }}/disk_utilization_report.html"
+      when: result_files.files | length > 0
+      
+    - name: Upload HTML report to S3
+      amazon.aws.s3_object:
+        bucket: "{{ s3_bucket_name }}"
+        object: "{{ timestamp_dir }}/disk_utilization_report.html"
+        src: "{{ result_dir }}/disk_utilization_report.html"
+        mode: put
+        content_type: "text/html"
+      environment:
+        AWS_PROFILE: monitoring
+      when: result_files.files | length > 0
+      
+    - name: Create latest pointer
+      amazon.aws.s3_object:
+        bucket: "{{ s3_bucket_name }}"
+        object: "latest/combined_results.json"
+        src: "{{ result_dir }}/combined_results.json"
+        mode: put
+      environment:
+        AWS_PROFILE: monitoring
+      when: result_files.files | length > 0
+      
+    - name: Create latest HTML report
+      amazon.aws.s3_object:
+        bucket: "{{ s3_bucket_name }}"
+        object: "latest/disk_utilization_report.html"
+        src: "{{ result_dir }}/disk_utilization_report.html"
+        mode: put
+        content_type: "text/html"
+      environment:
+        AWS_PROFILE: monitoring
+      when: result_files.files | length > 0
+      
+    - name: Display report URL
+      debug:
+        msg: "Report available at: https://{{ s3_bucket_name }}.s3.amazonaws.com/latest/disk_utilization_report.html"
+      when: result_files.files | length > 0
