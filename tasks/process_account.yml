@@ -1,0 +1,48 @@
+---
+# Task file: tasks/process_account.yml
+# Purpose: Process a single AWS account to collect disk utilization metrics
+
+- name: Begin processing {{ account.name }} ({{ account.id }})
+  debug:
+    msg: "Processing account: {{ account.name }} in region {{ account.region }}"
+
+- name: Assume role for {{ account.name }}
+  community.aws.sts_assume_role:
+    role_arn: "arn:aws:iam::{{ account.id }}:role/DiskMonitoringRole"
+    role_session_name: "AnsibleDiskMonitoring-{{ ansible_date_time.epoch }}"
+    region: "{{ account.region }}"
+  register: assumed_role
+
+- name: Set AWS environment variables for this account
+  set_fact:
+    env_vars:
+      AWS_ACCESS_KEY_ID: "{{ assumed_role.sts_creds.access_key }}"
+      AWS_SECRET_ACCESS_KEY: "{{ assumed_role.sts_creds.secret_key }}"
+      AWS_SESSION_TOKEN: "{{ assumed_role.sts_creds.session_token }}"
+      AWS_REGION: "{{ account.region }}"
+
+- name: Create account-specific results directory
+  file:
+    path: "{{ result_dir }}/{{ account.id }}"
+    state: directory
+    mode: '0755'
+
+- name: Get EC2 instance information
+  amazon.aws.ec2_instance_info:
+    region: "{{ account.region }}"
+  register: ec2_instances
+  environment: "{{ env_vars }}"
+
+- name: Display instance count
+  debug:
+    msg: "Found {{ ec2_instances.instances | length }} instances in {{ account.name }}"
+
+- name: Check disk utilization for each instance
+  include_tasks: tasks/check_disk_space.yml
+  loop: "{{ ec2_instances.instances }}"
+  loop_control:
+    loop_var: instance
+    label: "{{ instance.instance_id }} ({{ instance.tags.Name | default('Unnamed') }})"
+  vars:
+    account_id: "{{ account.id }}"
+    account_name: "{{ account.name }}"
