@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AWS EC2 Disk Utilization Report</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+        }
+        h1, h2, h3 {
+            color: #0066cc;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            background-color: #f4f4f4;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .summary {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+        .summary-box {
+            flex: 1;
+            padding: 15px;
+            margin: 0 10px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .ok {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .warning {
+            background-color: #fff3cd;
+            color: #856404;
+        }
+        .critical {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .utilization-bar {
+            background-color: #e9ecef;
+            border-radius: 4px;
+            height: 20px;
+            position: relative;
+            width: 100%;
+        }
+        .utilization-fill {
+            height: 20px;
+            border-radius: 4px;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .footer {
+            margin-top: 30px;
+            text-align: center;
+            font-size: 0.8em;
+            color: #777;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>AWS EC2 Disk Utilization Report</h1>
+            <p>Generated: {{ ansible_date_time.iso8601 }}</p>
+            <p>Accounts Monitored: {{ aws_accounts | length }}</p>
+        </div>
+
+        {% set critical_count = 0 %}
+        {% set warning_count = 0 %}
+        {% set ok_count = 0 %}
+        {% for file in result_files.files %}
+            {% set content = lookup('file', file.path) | from_json %}
+            {% if content.status == "CRITICAL" %}
+                {% set critical_count = critical_count + 1 %}
+            {% elif content.status == "WARNING" %}
+                {% set warning_count = warning_count + 1 %}
+            {% elif content.status == "OK" %}
+                {% set ok_count = ok_count + 1 %}
+            {% endif %}
+        {% endfor %}
+
+        <div class="summary">
+            <div class="summary-box critical">
+                <h2>Critical</h2>
+                <p>{{ critical_count }} instances</p>
+            </div>
+            <div class="summary-box warning">
+                <h2>Warning</h2>
+                <p>{{ warning_count }} instances</p>
+            </div>
+            <div class="summary-box ok">
+                <h2>OK</h2>
+                <p>{{ ok_count }} instances</p>
+            </div>
+        </div>
+
+        {% if critical_count > 0 %}
+        <h2>Critical Instances</h2>
+        <table>
+            <tr>
+                <th>Account</th>
+                <th>Instance ID</th>
+                <th>Name</th>
+                <th>Mount Point</th>
+                <th>Size</th>
+                <th>Used</th>
+                <th>Available</th>
+                <th>Usage %</th>
+            </tr>
+            {% for file in result_files.files %}
+                {% set content = lookup('file', file.path) | from_json %}
+                {% if content.status == "CRITICAL" %}
+                    {% for disk in content.disk_metrics %}
+                        {% if disk.use_percent | replace('%', '') | int >= threshold_critical %}
+                        <tr>
+                            <td>{{ content.account_name }}</td>
+                            <td>{{ content.instance_id }}</td>
+                            <td>{{ content.instance_name }}</td>
+                            <td>{{ disk.mount_point }}</td>
+                            <td>{{ disk.size }}</td>
+                            <td>{{ disk.used }}</td>
+                            <td>{{ disk.avail }}</td>
+                            <td>
+                                <div class="utilization-bar">
+                                    <div class="utilization-fill" style="width: {{ disk.use_percent }}; background-color: #dc3545;">
+                                    </div>
+                                </div>
+                                {{ disk.use_percent }}
+                            </td>
+                        </tr>
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
+            {% endfor %}
+        </table>
+        {% endif %}
+
+        {% if warning_count > 0 %}
+        <h2>Warning Instances</h2>
+        <table>
+            <tr>
+                <th>Account</th>
+                <th>Instance ID</th>
+                <th>Name</th>
+                <th>Mount Point</th>
+                <th>Size</th>
+                <th>Used</th>
+                <th>Available</th>
+                <th>Usage %</th>
+            </tr>
+            {% for file in result_files.files %}
+                {% set content = lookup('file', file.path) | from_json %}
+                {% if content.status == "WARNING" %}
+                    {% for disk in content.disk_metrics %}
+                        {% if disk.use_percent | replace('%', '') | int >= threshold_warning and disk.use_percent | replace('%', '') | int < threshold_critical %}
+                        <tr>
+                            <td>{{ content.account_name }}</td>
+                            <td>{{ content.instance_id }}</td>
+                            <td>{{ content.instance_name }}</td>
+                            <td>{{ disk.mount_point }}</td>
+                            <td>{{ disk.size }}</td>
+                            <td>{{ disk.used }}</td>
+                            <td>{{ disk.avail }}</td>
+                            <td>
+                                <div class="utilization-bar">
+                                    <div class="utilization-fill" style="width: {{ disk.use_percent }}; background-color: #ffc107;">
+                                    </div>
+                                </div>
+                                {{ disk.use_percent }}
+                            </td>
+                        </tr>
+                        {% endif %}
+                    {% endfor %}
+                {% endif %}
+            {% endfor %}
+        </table>
+        {% endif %}
+
+        <h2>All Instances Summary</h2>
+        <table>
+            <tr>
+                <th>Account</th>
+                <th>Instance ID</th>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Details</th>
+            </tr>
+            {% for file in result_files.files %}
+                {% set content = lookup('file', file.path) | from_json %}
+                <tr>
+                    <td>{{ content.account_name }}</td>
+                    <td>{{ content.instance_id }}</td>
+                    <td>{{ content.instance_name }}</td>
+                    <td>{{ content.instance_type }}</td>
+                    <td>
+                        {% if content.status == "CRITICAL" %}
+                            <span style="color: #721c24; font-weight: bold;">CRITICAL</span>
+                        {% elif content.status == "WARNING" %}
+                            <span style="color: #856404; font-weight: bold;">WARNING</span>
+                        {% elif content.status == "OK" %}
+                            <span style="color: #155724; font-weight: bold;">OK</span>
+                        {% else %}
+                            <span style="color: #1b1e21; font-weight: bold;">{{ content.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ content.disk_metrics | length }} volumes</td>
+                </tr>
+            {% endfor %}
+        </table>
+
+        <div class="footer">
+            <p>Generated by Ansible Multi-Account Disk Monitoring Solution</p>
+            <p>For questions contact: infrastructure-team@company.com</p>
+        </div>
+    </div>
+</body>
+</html>
