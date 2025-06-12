@@ -1,0 +1,86 @@
+---
+# Task file: tasks/check_disk_space.yml
+# Purpose: Check disk space on a single EC2 instance
+
+- name: Check if instance is running
+  when: instance.state.name == "running"
+  block:
+    - name: Check if instance has SSM agent
+      amazon.aws.aws_ssm_send_command:
+        instance_ids:
+          - "{{ instance.instance_id }}"
+        document_name: "AWS-RunShellScript"
+        parameters:
+          commands:
+            - "echo 'SSM Agent Test'"
+        wait: true
+        wait_timeout: 10
+      register: ssm_test
+      environment: "{{ env_vars }}"
+      ignore_errors: yes
+    
+    - name: Get disk utilization (when SSM is available)
+      amazon.aws.aws_ssm_send_command:
+        instance_ids:
+          - "{{ instance.instance_id }}"
+        document_name: "AWS-RunShellScript"
+        parameters:
+          commands:
+            - "df -Th | grep -v tmpfs | grep -v devtmpfs | tail -n +2 | awk '{print $1,$2,$3,$4,$5,$6,$7}'"
+        wait: true
+        wait_timeout: 30
+      register: disk_check
+      environment: "{{ env_vars }}"
+      ignore_errors: yes
+      when: ssm_test is success
+    
+    - name: Parse disk utilization data
+      set_fact:
+        parsed_disk_data: "{{ disk_check.command.output | trim | split('\n') | map('regex_replace', '\\s+', ',') | list }}"
+      when: disk_check is defined and disk_check is success
+    
+    - name: Process and transform disk data
+      set_fact:
+        disk_metrics: "{{ parsed_disk_data | map('split', ',') | map('dict', ['filesystem', 'type', 'size', 'used', 'avail', 'use_percent', 'mount_point']) | list }}"
+      when: parsed_disk_data is defined
+    
+    - name: Flag volumes with high utilization
+      set_fact:
+        critical_volumes: "{{ disk_metrics | selectattr('use_percent', 'match', '([0-9]{2,3})%') | selectattr('use_percent', 'regex_replace', '%', '') | int >= threshold_critical | list }}"
+        warning_volumes: "{{ disk_metrics | selectattr('use_percent', 'match', '([0-9]{2,3})%') | selectattr('use_percent', 'regex_replace', '%', '') | int >= threshold_warning | int < threshold_critical | list }}"
+      when: disk_metrics is defined
+    
+    - name: Save disk utilization results
+      copy:
+        content: |
+          {
+            "account_id": "{{ account_id }}",
+            "account_name": "{{ account_name }}",
+            "instance_id": "{{ instance.instance_id }}",
+            "instance_name": "{{ instance.tags.Name | default('Unnamed') }}",
+            "instance_type": "{{ instance.instance_type }}",
+            "availability_zone": "{{ instance.placement.availability_zone }}",
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "status": "{{ 'CRITICAL' if critical_volumes | length > 0 else 'WARNING' if warning_volumes | length > 0 else 'OK' }}",
+            "disk_metrics": {{ disk_metrics | default([]) | to_json }},
+            "has_critical": {{ critical_volumes is defined and (critical_volumes | length > 0) | bool }},
+            "has_warning": {{ warning_volumes is defined and (warning_volumes | length > 0) | bool }}
+          }
+        dest: "{{ result_dir }}/{{ account_id }}_{{ instance.instance_id }}.json"
+      when: disk_metrics is defined
+  rescue:
+    - name: Log failure for instance
+      copy:
+        content: |
+          {
+            "account_id": "{{ account_id }}",
+            "account_name": "{{ account_name }}",
+            "instance_id": "{{ instance.instance_id }}",
+            "instance_name": "{{ instance.tags.Name | default('Unnamed') }}",
+            "instance_type": "{{ instance.instance_type }}",
+            "availability_zone": "{{ instance.placement.availability_zone }}",
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "status": "ERROR",
+            "error_message": "Failed to collect disk metrics"
+          }
+        dest: "{{ result_dir }}/{{ account_id }}_{{ instance.instance_id }}_error.json"
