@@ -1,0 +1,22 @@
+---
+# AWS account definitions
+aws_accounts:
+  - name: "Production"
+    id: "123456789012"     # Replace with actual AWS account ID
+    region: "us-west-2"
+    description: "Main production environment"
+  - name: "Development"
+    id: "234567890123"     # Replace with actual AWS account ID
+    region: "us-east-1"
+    description: "Development and testing environment"
+  - name: "Testing"
+    id: "345678901234"     # Replace with actual AWS account ID
+    region: "eu-west-1"
+    description: "QA testing environment"
+
+# Configuration settings
+result_dir: "/tmp/disk-utilization-results"
+s3_bucket_name: "company-disk-metrics"
+threshold_warning: 80     # Warning threshold percentage
+threshold_critical: 90    # Critical threshold percentage
+report_retention_days: 90 # Number of days to keep historical data
